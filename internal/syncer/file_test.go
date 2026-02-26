@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/robertgontarski/sync/internal/fs"
 )
 
 func TestCopyFile(t *testing.T) {
@@ -19,7 +21,8 @@ func TestCopyFile(t *testing.T) {
 		t.Fatalf("failed to create source file: %v", err)
 	}
 
-	if err := CopyFile(srcPath, dstPath); err != nil {
+	localFS := fs.NewLocalFS()
+	if err := CopyFile(localFS, srcPath, localFS, dstPath); err != nil {
 		t.Fatalf("CopyFile failed: %v", err)
 	}
 
@@ -45,7 +48,11 @@ func TestCopyFileCreatesDir(t *testing.T) {
 		t.Fatalf("failed to create source file: %v", err)
 	}
 
-	if err := CopyFile(srcPath, dstPath); err != nil {
+	localFS := fs.NewLocalFS()
+	if err := EnsureDir(localFS, filepath.Dir(dstPath)); err != nil {
+		t.Fatalf("EnsureDir failed: %v", err)
+	}
+	if err := CopyFile(localFS, srcPath, localFS, dstPath); err != nil {
 		t.Fatalf("CopyFile failed: %v", err)
 	}
 
@@ -77,7 +84,8 @@ func TestCompareByMetadata_Identical(t *testing.T) {
 		t.Fatalf("failed to set modtime for file2: %v", err)
 	}
 
-	identical, err := CompareByMetadata(path1, path2)
+	localFS := fs.NewLocalFS()
+	identical, err := CompareByMetadata(localFS, path1, localFS, path2)
 	if err != nil {
 		t.Fatalf("CompareByMetadata failed: %v", err)
 	}
@@ -99,7 +107,8 @@ func TestCompareByMetadata_DifferentSize(t *testing.T) {
 		t.Fatalf("failed to create file2: %v", err)
 	}
 
-	identical, err := CompareByMetadata(path1, path2)
+	localFS := fs.NewLocalFS()
+	identical, err := CompareByMetadata(localFS, path1, localFS, path2)
 	if err != nil {
 		t.Fatalf("CompareByMetadata failed: %v", err)
 	}
@@ -132,7 +141,8 @@ func TestCompareByMetadata_DifferentModTime(t *testing.T) {
 		t.Fatalf("failed to set modtime for file2: %v", err)
 	}
 
-	identical, err := CompareByMetadata(path1, path2)
+	localFS := fs.NewLocalFS()
+	identical, err := CompareByMetadata(localFS, path1, localFS, path2)
 	if err != nil {
 		t.Fatalf("CompareByMetadata failed: %v", err)
 	}
@@ -155,7 +165,8 @@ func TestCompareByChecksum_Identical(t *testing.T) {
 		t.Fatalf("failed to create file2: %v", err)
 	}
 
-	identical, err := CompareByChecksum(path1, path2)
+	localFS := fs.NewLocalFS()
+	identical, err := CompareByChecksum(localFS, path1, localFS, path2)
 	if err != nil {
 		t.Fatalf("CompareByChecksum failed: %v", err)
 	}
@@ -177,7 +188,8 @@ func TestCompareByChecksum_Different(t *testing.T) {
 		t.Fatalf("failed to create file2: %v", err)
 	}
 
-	identical, err := CompareByChecksum(path1, path2)
+	localFS := fs.NewLocalFS()
+	identical, err := CompareByChecksum(localFS, path1, localFS, path2)
 	if err != nil {
 		t.Fatalf("CompareByChecksum failed: %v", err)
 	}
@@ -194,7 +206,8 @@ func TestCalculateChecksum(t *testing.T) {
 		t.Fatalf("failed to create file: %v", err)
 	}
 
-	checksum, err := CalculateChecksum(path)
+	localFS := fs.NewLocalFS()
+	checksum, err := CalculateChecksum(localFS, path)
 	if err != nil {
 		t.Fatalf("CalculateChecksum failed: %v", err)
 	}
@@ -209,7 +222,8 @@ func TestEnsureDir(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "a", "b", "c")
 
-	if err := EnsureDir(path); err != nil {
+	localFS := fs.NewLocalFS()
+	if err := EnsureDir(localFS, path); err != nil {
 		t.Fatalf("EnsureDir failed: %v", err)
 	}
 
@@ -225,7 +239,8 @@ func TestEnsureDir(t *testing.T) {
 func TestEnsureDir_Existing(t *testing.T) {
 	dir := t.TempDir()
 
-	if err := EnsureDir(dir); err != nil {
+	localFS := fs.NewLocalFS()
+	if err := EnsureDir(localFS, dir); err != nil {
 		t.Fatalf("EnsureDir failed on existing directory: %v", err)
 	}
 }

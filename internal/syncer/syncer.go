@@ -1,10 +1,15 @@
 package syncer
 
 import (
+	"fmt"
 	"os"
+	"os/user"
+	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/robertgontarski/sync/internal/cli"
+	"github.com/robertgontarski/sync/internal/fs"
 	"github.com/robertgontarski/sync/internal/logger"
 )
 
@@ -20,26 +25,90 @@ func New(config *cli.Config, log *logger.Logger) *Syncer {
 	}
 }
 
+func createFS(pathInfo fs.PathInfo, config *cli.Config) (fs.FileSystem, error) {
+	if !pathInfo.IsRemote {
+		return fs.NewLocalFS(), nil
+	}
+
+	username := pathInfo.User
+	if username == "" {
+		u, err := user.Current()
+		if err != nil {
+			return nil, fmt.Errorf("cannot determine current user: %w", err)
+		}
+		username = u.Username
+	}
+
+	return fs.NewSFTPFS(fs.SFTPConfig{
+		User:         username,
+		Host:         pathInfo.Host,
+		Port:         config.Port,
+		IdentityFile: config.IdentityFile,
+		Password:     config.Password,
+	})
+}
+
+// joinPath joins path elements using the appropriate separator for the filesystem.
+func joinPath(filesystem fs.FileSystem, elem ...string) string {
+	if _, ok := filesystem.(*fs.SFTPFS); ok {
+		return path.Join(elem...)
+	}
+	return filepath.Join(elem...)
+}
+
+// relPath computes the relative path using the appropriate separator for the filesystem.
+func relPath(filesystem fs.FileSystem, basepath, targpath string) (string, error) {
+	if _, ok := filesystem.(*fs.SFTPFS); ok {
+		// For SFTP, use forward-slash based relative path computation.
+		if !strings.HasSuffix(basepath, "/") {
+			basepath += "/"
+		}
+		if strings.HasPrefix(targpath, basepath) {
+			return strings.TrimPrefix(targpath, basepath), nil
+		}
+		return "", fmt.Errorf("cannot make %s relative to %s", targpath, basepath)
+	}
+	return filepath.Rel(basepath, targpath)
+}
+
 func (s *Syncer) Sync() error {
-	srcInfo, err := os.Stat(s.config.SourceDir)
+	srcInfo := fs.ParsePath(s.config.SourceDir)
+	dstInfo := fs.ParsePath(s.config.TargetDir)
+
+	srcFS, err := createFS(srcInfo, s.config)
+	if err != nil {
+		return fmt.Errorf("source: %w", err)
+	}
+	defer srcFS.Close()
+
+	dstFS, err := createFS(dstInfo, s.config)
+	if err != nil {
+		return fmt.Errorf("target: %w", err)
+	}
+	defer dstFS.Close()
+
+	srcPath := srcInfo.Path
+	dstPath := dstInfo.Path
+
+	stat, err := srcFS.Stat(srcPath)
 	if err != nil {
 		return err
 	}
 
-	if !srcInfo.IsDir() {
+	if !stat.IsDir {
 		return os.ErrInvalid
 	}
 
-	if err := EnsureDir(s.config.TargetDir); err != nil {
+	if err := EnsureDir(dstFS, dstPath); err != nil {
 		return err
 	}
 
-	if err := s.syncSource(); err != nil {
+	if err := s.syncSource(srcFS, srcPath, dstFS, dstPath); err != nil {
 		return err
 	}
 
 	if s.config.DeleteMissing {
-		if err := s.deleteOrphans(); err != nil {
+		if err := s.deleteOrphans(srcFS, srcPath, dstFS, dstPath); err != nil {
 			return err
 		}
 	}
@@ -47,43 +116,52 @@ func (s *Syncer) Sync() error {
 	return nil
 }
 
-func (s *Syncer) syncSource() error {
-	return filepath.Walk(s.config.SourceDir, func(srcPath string, info os.FileInfo, err error) error {
+func (s *Syncer) syncSource(srcFS fs.FileSystem, srcRoot string, dstFS fs.FileSystem, dstRoot string) error {
+	return srcFS.Walk(srcRoot, func(srcPath string, info fs.FileInfo, err error) error {
 		if err != nil {
 			s.logger.Error("failed to access %s: %v", srcPath, err)
 			return nil
 		}
 
-		if info.IsDir() {
+		if info.IsDir {
 			return nil
 		}
 
-		relPath, err := filepath.Rel(s.config.SourceDir, srcPath)
+		rel, err := relPath(srcFS, srcRoot, srcPath)
 		if err != nil {
 			s.logger.Error("failed to get relative path for %s: %v", srcPath, err)
 			return nil
 		}
 
-		dstPath := filepath.Join(s.config.TargetDir, relPath)
+		dstPath := joinPath(dstFS, dstRoot, rel)
 
-		if _, err := os.Stat(dstPath); os.IsNotExist(err) {
-			s.logger.Info("copying %s", relPath)
-			if err := CopyFile(srcPath, dstPath); err != nil {
-				s.logger.Error("failed to copy %s: %v", relPath, err)
+		if _, err := dstFS.Stat(dstPath); err != nil {
+			// File doesn't exist on destination - ensure parent dir and copy.
+			dstDir := filepath.Dir(dstPath)
+			if _, ok := dstFS.(*fs.SFTPFS); ok {
+				dstDir = path.Dir(dstPath)
+			}
+			if err := EnsureDir(dstFS, dstDir); err != nil {
+				s.logger.Error("failed to create directory for %s: %v", rel, err)
+				return nil
+			}
+			s.logger.Info("copying %s", rel)
+			if err := CopyFile(srcFS, srcPath, dstFS, dstPath); err != nil {
+				s.logger.Error("failed to copy %s: %v", rel, err)
 			}
 			return nil
 		}
 
-		identical, err := CompareFiles(srcPath, dstPath, s.config.UseChecksum)
+		identical, err := CompareFiles(srcFS, srcPath, dstFS, dstPath, s.config.UseChecksum)
 		if err != nil {
-			s.logger.Error("failed to compare %s: %v", relPath, err)
+			s.logger.Error("failed to compare %s: %v", rel, err)
 			return nil
 		}
 
 		if !identical {
-			s.logger.Info("updating %s", relPath)
-			if err := CopyFile(srcPath, dstPath); err != nil {
-				s.logger.Error("failed to update %s: %v", relPath, err)
+			s.logger.Info("updating %s", rel)
+			if err := CopyFile(srcFS, srcPath, dstFS, dstPath); err != nil {
+				s.logger.Error("failed to update %s: %v", rel, err)
 			}
 		}
 
@@ -91,29 +169,29 @@ func (s *Syncer) syncSource() error {
 	})
 }
 
-func (s *Syncer) deleteOrphans() error {
-	return filepath.Walk(s.config.TargetDir, func(dstPath string, info os.FileInfo, err error) error {
+func (s *Syncer) deleteOrphans(srcFS fs.FileSystem, srcRoot string, dstFS fs.FileSystem, dstRoot string) error {
+	return dstFS.Walk(dstRoot, func(dstPath string, info fs.FileInfo, err error) error {
 		if err != nil {
 			s.logger.Error("failed to access %s: %v", dstPath, err)
 			return nil
 		}
 
-		if info.IsDir() {
+		if info.IsDir {
 			return nil
 		}
 
-		relPath, err := filepath.Rel(s.config.TargetDir, dstPath)
+		rel, err := relPath(dstFS, dstRoot, dstPath)
 		if err != nil {
 			s.logger.Error("failed to get relative path for %s: %v", dstPath, err)
 			return nil
 		}
 
-		srcPath := filepath.Join(s.config.SourceDir, relPath)
+		srcPath := joinPath(srcFS, srcRoot, rel)
 
-		if _, err := os.Stat(srcPath); os.IsNotExist(err) {
-			s.logger.Info("deleting %s", relPath)
-			if err := os.Remove(dstPath); err != nil {
-				s.logger.Error("failed to delete %s: %v", relPath, err)
+		if _, err := srcFS.Stat(srcPath); err != nil {
+			s.logger.Info("deleting %s", rel)
+			if err := dstFS.Remove(dstPath); err != nil {
+				s.logger.Error("failed to delete %s: %v", rel, err)
 			}
 		}
 

@@ -1,6 +1,6 @@
 # Sync
 
-One-way file synchronization tool written in Go.
+One-way file synchronization tool written in Go. Supports local and remote (SFTP) directories.
 
 ## Installation
 
@@ -30,16 +30,21 @@ docker build -t sync:latest .
 
 ### Arguments
 
-- `<source>` - Source directory path (required)
-- `<target>` - Target directory path (required)
+- `<source>` - Source directory path or `[user@]host:/path` for remote (required)
+- `<target>` - Target directory path or `[user@]host:/path` for remote (required)
 
 ### Options
 
 - `-d, --delete-missing` - Delete files in target that don't exist in source
 - `-c, --checksum` - Compare files using SHA256 checksum (slower but more accurate)
+- `-i, --identity FILE` - Path to SSH private key (default: `~/.ssh/id_ed25519`, `~/.ssh/id_rsa`)
+- `-p, --port PORT` - SSH port (default: 22)
+- `--password PASS` - SSH password (prefer key-based auth)
 - `-h, --help` - Show help message
 
 ## Examples
+
+### Local to local
 
 ```bash
 # Basic synchronization
@@ -53,6 +58,30 @@ docker build -t sync:latest .
 
 # Combine flags
 ./sync -d -c /path/to/source /path/to/target
+```
+
+### Local to remote (SFTP)
+
+```bash
+# Push local files to remote server
+./sync /local/path user@host:/remote/path
+
+# With custom SSH key and port
+./sync -i ~/.ssh/my_key -p 2222 /local/path user@host:/remote/path
+```
+
+### Remote to local (SFTP)
+
+```bash
+# Pull remote files to local directory
+./sync user@host:/remote/path /local/path
+```
+
+### Remote to remote (SFTP)
+
+```bash
+# Sync between two remote servers
+./sync user@host1:/path user@host2:/path
 ```
 
 ### Docker
@@ -85,6 +114,16 @@ docker run --rm \
 
 - **Default (metadata)**: Compares file size and modification time. Fast but may miss files with same size/time but different content.
 - **Checksum (`-c`)**: Compares SHA256 hash of file contents. Slower but guarantees detection of any content difference.
+
+## SSH authentication
+
+When using remote paths (`[user@]host:/path`), the tool connects via SFTP over SSH. Authentication methods are tried in this order:
+
+1. **Password** — if provided via `--password` flag
+2. **SSH agent** — if `SSH_AUTH_SOCK` is set
+3. **Private key** — from `--identity` flag, or defaults: `~/.ssh/id_ed25519`, `~/.ssh/id_rsa`
+
+Host key verification uses `~/.ssh/known_hosts` when available.
 
 ## Building
 

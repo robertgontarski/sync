@@ -5,26 +5,23 @@ import (
 	"encoding/hex"
 	"io"
 	"os"
-	"path/filepath"
+
+	"github.com/robertgontarski/sync/internal/fs"
 )
 
-func CopyFile(src, dst string) error {
-	if err := EnsureDir(filepath.Dir(dst)); err != nil {
+func CopyFile(srcFS fs.FileSystem, srcPath string, dstFS fs.FileSystem, dstPath string) error {
+	srcInfo, err := srcFS.Stat(srcPath)
+	if err != nil {
 		return err
 	}
 
-	srcFile, err := os.Open(src)
+	srcFile, err := srcFS.Open(srcPath)
 	if err != nil {
 		return err
 	}
 	defer srcFile.Close()
 
-	srcInfo, err := srcFile.Stat()
-	if err != nil {
-		return err
-	}
-
-	dstFile, err := os.Create(dst)
+	dstFile, err := dstFS.Create(dstPath)
 	if err != nil {
 		return err
 	}
@@ -34,49 +31,49 @@ func CopyFile(src, dst string) error {
 		return err
 	}
 
-	if err := dstFile.Chmod(srcInfo.Mode()); err != nil {
+	if err := dstFS.Chmod(dstPath, srcInfo.Mode); err != nil {
 		return err
 	}
 
-	return os.Chtimes(dst, srcInfo.ModTime(), srcInfo.ModTime())
+	return dstFS.Chtimes(dstPath, srcInfo.ModTime, srcInfo.ModTime)
 }
 
-func CompareFiles(src, dst string, useChecksum bool) (bool, error) {
+func CompareFiles(srcFS fs.FileSystem, srcPath string, dstFS fs.FileSystem, dstPath string, useChecksum bool) (bool, error) {
 	if useChecksum {
-		return CompareByChecksum(src, dst)
+		return CompareByChecksum(srcFS, srcPath, dstFS, dstPath)
 	}
 
-	return CompareByMetadata(src, dst)
+	return CompareByMetadata(srcFS, srcPath, dstFS, dstPath)
 }
 
-func CompareByMetadata(src, dst string) (bool, error) {
-	srcInfo, err := os.Stat(src)
+func CompareByMetadata(srcFS fs.FileSystem, srcPath string, dstFS fs.FileSystem, dstPath string) (bool, error) {
+	srcInfo, err := srcFS.Stat(srcPath)
 	if err != nil {
 		return false, err
 	}
 
-	dstInfo, err := os.Stat(dst)
+	dstInfo, err := dstFS.Stat(dstPath)
 	if err != nil {
 		return false, err
 	}
 
-	if srcInfo.Size() != dstInfo.Size() {
+	if srcInfo.Size != dstInfo.Size {
 		return false, nil
 	}
 
-	srcModTime := srcInfo.ModTime().Truncate(1e9)
-	dstModTime := dstInfo.ModTime().Truncate(1e9)
+	srcModTime := srcInfo.ModTime.Truncate(1e9)
+	dstModTime := dstInfo.ModTime.Truncate(1e9)
 
 	return srcModTime.Equal(dstModTime), nil
 }
 
-func CompareByChecksum(src, dst string) (bool, error) {
-	srcChecksum, err := CalculateChecksum(src)
+func CompareByChecksum(srcFS fs.FileSystem, srcPath string, dstFS fs.FileSystem, dstPath string) (bool, error) {
+	srcChecksum, err := CalculateChecksum(srcFS, srcPath)
 	if err != nil {
 		return false, err
 	}
 
-	dstChecksum, err := CalculateChecksum(dst)
+	dstChecksum, err := CalculateChecksum(dstFS, dstPath)
 	if err != nil {
 		return false, err
 	}
@@ -84,8 +81,8 @@ func CompareByChecksum(src, dst string) (bool, error) {
 	return srcChecksum == dstChecksum, nil
 }
 
-func CalculateChecksum(path string) (string, error) {
-	file, err := os.Open(path)
+func CalculateChecksum(filesystem fs.FileSystem, path string) (string, error) {
+	file, err := filesystem.Open(path)
 	if err != nil {
 		return "", err
 	}
@@ -99,6 +96,6 @@ func CalculateChecksum(path string) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-func EnsureDir(path string) error {
-	return os.MkdirAll(path, 0755)
+func EnsureDir(filesystem fs.FileSystem, path string) error {
+	return filesystem.MkdirAll(path, os.FileMode(0755))
 }
